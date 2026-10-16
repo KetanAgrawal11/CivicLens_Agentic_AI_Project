@@ -1,0 +1,85 @@
+{
+  "documents": [
+    {
+      "name": "Climate Accord 2025",
+      "path": "C:\\Users\\Ketan Agrawal\\AppData\\Local\\Temp\\pytest-of-Ketan Agrawal\\pytest-16\\test_document_research_retriev0\\climate_accord.txt",
+      "url": "",
+      "date": "Unknown",
+      "hash": "2b376b7db5e422c34de698323a345684a7a962171cba004a1c84e3545ee1d701",
+      "chunks_count": 1,
+      "ingested_at": "2026-10-13T20:12:14.234356+00:00",
+      "content_type": ".txt"
+    },
+    {
+      "name": "Statute 1950",
+      "path": "C:\\Users\\Ketan Agrawal\\AppData\\Local\\Temp\\pytest-of-Ketan Agrawal\\pytest-16\\test_persistence_of_ingested_m0\\statute_1950.txt",
+      "url": "",
+      "date": "1950",
+      "hash": "d93453e9aec04eeafe62f8d0a05e1e89a5e124523fb879c1e4005b2b84776e09",
+      "chunks_count": 1,
+      "ingested_at": "2026-10-13T20:13:03.338363+00:00",
+      "content_type": ".txt"
+    },
+    {
+      "name": "Bihar SIR Press Notes 2025",
+      "path": "C:\\Users\\Ketan Agrawal\\Desktop\\Agentic AI project\\data\\documents\\Bihar SIR Press Notes 2025.pdf",
+      "url": "",
+      "date": "2026-10-14",
+      "hash": "7e6398f0dc70821abc822410ddd12e817f84fa87a2770aba5712b79cb05a7728",
+      "chunks_count": 300,
+      "ingested_at": "2026-10-14T17:30:04.395841+00:00",
+      "content_type": ".pdf"
+    },
+    {
+      "name": "ECI SIR Order 24 June 2025",
+      "path": "C:\\Users\\Ketan Agrawal\\Desktop\\Agentic AI project\\data\\documents\\ECI SIR Order 24 June 2025.pdf",
+      "url": "",
+      "date": "2026-10-14",
+      "hash": "c13fc08f1becb0f5f4b1ce0f8ee3a7867fe6560f1ac078a1b5a8fff03aaac316",
+      "chunks_count": 147,
+      "ingested_at": "2026-10-14T17:30:44.683039+00:00",
+      "content_type": ".pdf"
+    },
+    {
+      "name": "Source 1",
+      "path": "C:\\Users\\Ketan Agrawal\\Desktop\\Agentic AI project\\data\\documents\\Source 1.pdf",
+      "url": "",
+      "date": "2026-10-14",
+      "hash": "c13fc08f1becb0f5f4b1ce0f8ee3a7867fe6560f1ac078a1b5a8fff03aaac316",
+      "chunks_count": 147,
+      "ingested_at": "2026-10-14T17:30:49.615662+00:00",
+      "content_type": ".pdf"
+    },
+    {
+      "name": "Source 2",
+      "path": "C:\\Users\\Ketan Agrawal\\Desktop\\Agentic AI project\\data\\documents\\Source 2.pdf",
+      "url": "",
+      "date": "2026-10-14",
+      "hash": "a660567efeb622d4155e383e3c7f2ef9c35ec085793e78274d932fafc0abe64e",
+      "chunks_count": 163,
+      "ingested_at": "2026-10-14T17:30:56.529315+00:00",
+      "content_type": ".pdf"
+    },
+    {
+      "name": "Source 3",
+      "path": "C:\\Users\\Ketan Agrawal\\Desktop\\Agentic AI project\\data\\documents\\Source 3.pdf",
+      "url": "",
+      "date": "2026-10-14",
+      "hash": "7126b1c40c67bde3a51e6f9a8ee8568fbd0753ffd7d7f53aee3ee5995d6cf834",
+      "chunks_count": 10,
+      "ingested_at": "2026-10-14T17:31:04.093371+00:00",
+      "content_type": ".pdf"
+    },
+    {
+      "name": "Supreme Court SIR Judgment 27 May 2026",
+      "path": "C:\\Users\\Ketan Agrawal\\Desktop\\Agentic AI project\\data\\documents\\Supreme Court SIR Judgment 27 May 2026.pdf",
+      "url": "",
+      "date": "2026-10-14",
+      "hash": "aa06993bbe33e64d5e31c676ac5d82aa6b449eed76becdd28e1e48fbb630daa8",
+      "chunks_count": 446,
+      "ingested_at": "2026-10-14T17:31:05.039346+00:00",
+      "content_type": ".pdf"
+    }
+  ],
+  "last_indexed": "2026-10-14T17:31:05.039346+00:00"
+}
