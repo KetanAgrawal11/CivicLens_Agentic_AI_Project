@@ -31,14 +31,6 @@ import router
 import tools
 
 
-@pytest.fixture(autouse=True)
-def memory_vector_store():
-    """Ensure in-memory Qdrant client is used for fast, isolated unit tests."""
-    knowledge_base.set_memory_mode(True)
-    yield
-    knowledge_base.set_memory_mode(False)
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 #  SCENARIO 1: Simple Question (Direct Route)
 # ═══════════════════════════════════════════════════════════════════════════════

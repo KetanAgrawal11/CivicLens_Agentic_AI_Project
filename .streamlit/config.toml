@@ -8,7 +8,11 @@ primaryColor = "#2d5a87"
 backgroundColor = "#ffffff"
 secondaryBackgroundColor = "#f8f9fa"
 textColor = "#1e1e1e"
-font = "sans serif"
+borderColor = "#e2e8f0"
+baseRadius = "8px"
+buttonRadius = "8px"
+font = "Plus Jakarta Sans:https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+codeFont = "JetBrains Mono:https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap"
 
 [browser]
 gatherUsageStats = false

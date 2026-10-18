@@ -36,9 +36,14 @@ class ResearchState(TypedDict, total=False):
     # Routing
     route: str
     route_reason: str
+    route_override: str  # set when the user forces a route from the UI
+
+    # User-tunable retrieval depth
+    rag_top_k: int
 
     # Planning & Agent Decision
     research_plan: str
+    plan_source: str  # "llm" when the planner produced the plan, "fallback" otherwise
     selected_tools: list[str]
     rag_rationale: str
     sub_objectives: list[str]
@@ -47,7 +52,8 @@ class ResearchState(TypedDict, total=False):
     # Execution tracking
     iteration: int
     max_iterations: int
-    tool_call_count: int
+    tool_call_count: int  # search/lookup tool calls; page downloads are counted in pages_fetched
+    pages_fetched: int
     max_tool_calls: int
     activity_log: list[dict[str, Any]]
 
@@ -61,6 +67,7 @@ class ResearchState(TypedDict, total=False):
 
     # Evidence & Verification
     extracted_claims: list[dict[str, Any]]
+    evidence_sources: list[dict[str, Any]]  # numbered sources [S1..Sn] shown to the claim judge
     evidence_comparison: dict[str, Any]
     citation_verification: dict[str, Any]
     conflict_detected: bool
@@ -88,6 +95,7 @@ def _initial_state(question: str, conversation_id: str | None = None) -> Researc
         route="web",
         route_reason="",
         research_plan="",
+        plan_source="",
         selected_tools=[],
         rag_rationale="",
         sub_objectives=[],
@@ -95,6 +103,7 @@ def _initial_state(question: str, conversation_id: str | None = None) -> Researc
         iteration=0,
         max_iterations=config.MAX_AGENT_ITERATIONS,
         tool_call_count=0,
+        pages_fetched=0,
         max_tool_calls=config.MAX_TOOL_CALLS,
         activity_log=[],
         search_results=[],
@@ -104,6 +113,7 @@ def _initial_state(question: str, conversation_id: str | None = None) -> Researc
         academic_papers=[],
         unique_source_urls=[],
         extracted_claims=[],
+        evidence_sources=[],
         evidence_comparison={},
         citation_verification={},
         conflict_detected=False,
@@ -121,6 +131,8 @@ def _initial_state(question: str, conversation_id: str | None = None) -> Researc
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _current_log_callback = None
+
+VALID_ROUTES = ("direct", "rag", "web", "rag_and_web")
 
 
 def _get_llm() -> ChatGroq:
@@ -154,25 +166,68 @@ def _log(state: ResearchState, action: str, detail: str, **extra: Any) -> None:
             pass
 
 
+RATE_LIMIT_RETRIES = 3
+RATE_LIMIT_MAX_WAIT = 30.0  # seconds per retry
+
+
+def _rate_limit_wait(err: str) -> float:
+    """Seconds Groq asks us to wait ('try again in 7.5s' / 'in 1m2s'), capped; defaults to 10s."""
+    match = re.search(r"try again in (?:(\d+)m)?(\d+(?:\.\d+)?)s", err)
+    if not match:
+        return 10.0
+    return min(RATE_LIMIT_MAX_WAIT, int(match.group(1) or 0) * 60 + float(match.group(2)) + 1.0)
+
+
 def _call_llm(system_prompt: str, user_prompt: str) -> str:
-    """Invoke Groq LLM with robust error classification."""
+    """Invoke Groq LLM, waiting and retrying on per-minute rate limits, with clear error messages."""
     llm = _get_llm()
     messages = [
         SystemMessage(content=system_prompt),
         HumanMessage(content=user_prompt),
     ]
-    try:
-        response = llm.invoke(messages)
-        return response.content
-    except Exception as e:
-        err = str(e)
-        if "401" in err or "api_key" in err.lower() or "unauthorized" in err.lower():
-            raise RuntimeError(f"Groq Authentication Error: Invalid or missing GROQ_API_KEY in .env ({err[:160]})")
-        elif "429" in err or "rate" in err.lower():
-            raise RuntimeError(f"Groq Rate Limit Exceeded: Please wait a moment before trying again. ({err[:160]})")
-        elif "not_found" in err.lower() or "model" in err.lower():
-            raise RuntimeError(f"Groq Model Error: Model '{config.GROQ_MODEL}' unavailable. ({err[:160]})")
-        raise RuntimeError(f"Groq API Error: {err[:250]}")
+    for attempt in range(RATE_LIMIT_RETRIES + 1):
+        try:
+            response = llm.invoke(messages)
+            return response.content
+        except Exception as e:
+            err = str(e)
+            is_rate_limit = "429" in err or "rate limit" in err.lower()
+            if is_rate_limit and attempt < RATE_LIMIT_RETRIES:
+                wait = _rate_limit_wait(err)
+                if _current_log_callback:
+                    try:
+                        _current_log_callback({
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "action": "rate_limit_wait",
+                            "detail": f"Groq per-minute limit reached; waiting {wait:.0f}s before retrying ({attempt + 1}/{RATE_LIMIT_RETRIES})",
+                        })
+                    except Exception:
+                        pass
+                time.sleep(wait)
+                continue
+            if "401" in err or "api_key" in err.lower() or "unauthorized" in err.lower():
+                raise RuntimeError(f"Groq Authentication Error: Invalid or missing GROQ_API_KEY in .env ({err[:160]})")
+            if is_rate_limit:
+                raise RuntimeError(f"Groq Rate Limit Exceeded: still limited after {RATE_LIMIT_RETRIES} retries. Please wait a minute and try again. ({err[:160]})")
+            if "not_found" in err.lower() or "model" in err.lower():
+                raise RuntimeError(f"Groq Model Error: Model '{config.GROQ_MODEL}' unavailable. ({err[:160]})")
+            raise RuntimeError(f"Groq API Error: {err[:250]}")
+
+
+_NATIVE_CITATION_RE = re.compile(r"【([^】]*)】")
+_SOURCE_TAG_RE = re.compile(r"\b(KB|WEB)-(\d+)\b")
+
+
+def _normalize_citations(text: str) -> str:
+    """
+    gpt-oss models sometimes emit their native browsing citations, e.g. 【WEB-1†L1-L4】.
+    Rewrite them to the app's [WEB-1] form; drop native markers that name no source tag.
+    """
+    def repl(match: re.Match) -> str:
+        tags = [f"[{kind}-{num}]" for kind, num in _SOURCE_TAG_RE.findall(match.group(1))]
+        return "".join(dict.fromkeys(tags))  # keep order, drop duplicates
+
+    return _NATIVE_CITATION_RE.sub(repl, text)
 
 
 def _parse_json_from_llm(text: str) -> Any:
@@ -203,13 +258,30 @@ def _parse_json_from_llm(text: str) -> Any:
 
 def route_query_node(state: ResearchState) -> ResearchState:
     """Classify the incoming question into direct, rag, web, or rag_and_web."""
+    _log(state, "routing", "Analyzing the question and checking the knowledge base for relevant documents")
+    if state.get("route_override") in VALID_ROUTES:
+        state["route"] = state["route_override"]
+        state["route_reason"] = "Routing strategy chosen manually by the user."
+        _log(state, "routing", f"Route Selected: '{state['route'].upper()}' — {state['route_reason']}", confidence=1.0)
+        return state
+
     kb_status = knowledge_base.get_index_status()
     has_docs = kb_status.get("document_count", 0) > 0 or kb_status.get("total_chunks", 0) > 0
+
+    # Probe the knowledge base so relevant documents are not skipped by keyword-based routing
+    kb_top_score = None
+    if has_docs:
+        try:
+            probe = knowledge_base.search_knowledge_base(state["question"], top_k=1, min_score=0.0)
+            kb_top_score = probe.get("top_raw_score")
+        except Exception:
+            kb_top_score = None
 
     route_info = router.route_query(
         question=state["question"],
         has_indexed_documents=has_docs,
         llm_callable=_call_llm,
+        kb_top_score=kb_top_score,
     )
 
     state["route"] = route_info.get("route", "web")
@@ -289,6 +361,9 @@ TOOL SELECTION RULES:
 1. If the question does NOT relate to any of the indexed internal documents (e.g. general tech, AI releases like Gemini/Claude, international events), do NOT select "search_knowledge_base" — rely on "search_web" and "search_academic".
 2. If route is 'rag', focus strictly on "search_knowledge_base".
 3. If route is 'rag_and_web', select both "search_knowledge_base" and "search_web" to cross-verify internal assertions with live external reporting.
+4. Select "search_academic" only when peer-reviewed or technical research would help (science, engineering, medicine, AI/ML, benchmarks). Skip it for politics, law, elections and current news.
+5. Select "search_wikipedia" when background on organisations, laws, places or concepts would help.
+Only the tools you list will run, so choose deliberately.
 
 Respond strictly with a JSON object:
 {{
@@ -307,13 +382,24 @@ Respond strictly with a JSON object:
     response = _call_llm(system_prompt, user_prompt)
     parsed = _parse_json_from_llm(response)
 
-    if parsed and isinstance(parsed, dict):
+    planned_tools = parsed.get("selected_tools") if isinstance(parsed, dict) else None
+    if isinstance(planned_tools, list) and any(t in PLANNER_TOOLS for t in planned_tools):
+        state["plan_source"] = "llm"
         state["research_plan"] = parsed.get("plan", f"Investigating: {state['question']}")
-        state["selected_tools"] = parsed.get("selected_tools", ["search_web", "fetch_webpage"])
+        state["selected_tools"] = [t for t in planned_tools if t in PLANNER_TOOLS]
         state["rag_rationale"] = parsed.get("rag_rationale", "")
         state["sub_objectives"] = parsed.get("sub_objectives", [])
-        state["search_queries"] = parsed.get("queries", [state["question"]])
+        state["search_queries"] = parsed.get("queries") or [state["question"]]
+    elif isinstance(parsed, dict):
+        # Plan text is usable but no valid tool list: keep the plan, let keyword rules pick tools
+        state["plan_source"] = "fallback"
+        state["research_plan"] = parsed.get("plan", f"Investigating: {state['question']}")
+        state["selected_tools"] = ["search_web", "fetch_webpage"]
+        state["rag_rationale"] = parsed.get("rag_rationale", "")
+        state["sub_objectives"] = parsed.get("sub_objectives", [])
+        state["search_queries"] = parsed.get("queries") or [state["question"]]
     else:
+        state["plan_source"] = "fallback"
         state["research_plan"] = f"Investigating: {state['question']}"
         state["selected_tools"] = ["search_web", "fetch_webpage"]
         state["rag_rationale"] = "Default web research path."
@@ -336,6 +422,24 @@ Respond strictly with a JSON object:
 #  NODE 3: DYNAMIC TOOL EXECUTION (Strictly Respecting Agent Tool Selection)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+PLANNER_TOOLS = {
+    "search_web", "fetch_webpage", "search_knowledge_base", "search_wikipedia",
+    "search_academic", "check_source_credibility", "calculate_statistics",
+}
+
+# Word-prefix triggers ("research" also matches "researchers"); short "ai" must be a whole word
+_ACADEMIC_PREFIX_RE = re.compile(
+    r"\b(?:paper|stud(?:y|ies|ied)|research|scien|benchmark|climat|medic|clinical|trial|arxiv|claude)\w*",
+    re.IGNORECASE,
+)
+_ACADEMIC_WORD_RE = re.compile(r"\b(?:ai|a\.i\.|ml|llms?)(?=\W|$)", re.IGNORECASE)
+
+
+def _has_academic_trigger(question: str) -> bool:
+    """Return True if the question mentions scientific, academic or AI topics."""
+    return bool(_ACADEMIC_PREFIX_RE.search(question) or _ACADEMIC_WORD_RE.search(question))
+
+
 def execute_tools_node(state: ResearchState) -> ResearchState:
     """Execute callable tools dynamically according to the agent's explicit tool plan."""
     state["iteration"] = state.get("iteration", 0) + 1
@@ -352,15 +456,18 @@ def execute_tools_node(state: ResearchState) -> ResearchState:
         rag_query = queries[0] if queries else state["question"]
         rag_res = tools.search_knowledge_base(
             rag_query,
-            top_k=config.MAX_RAG_PASSAGES,
+            top_k=state.get("rag_top_k") or config.MAX_RAG_PASSAGES,
             min_score=config.MIN_RAG_RELEVANCE_SCORE,
         )
         state["tool_call_count"] = state.get("tool_call_count", 0) + 1
 
         passages = rag_res.get("results", [])
         if passages:
-            state["rag_passages"] = passages
-            _log(state, "rag_retrieved", f"Retrieved {len(passages)} relevant passages from Qdrant knowledge base (score: {passages[0].get('raw_score', 0):.2f})")
+            # Keep passages from earlier rounds; add only new ones
+            known_ids = {p.get("id") for p in state.get("rag_passages", [])}
+            new_passages = [p for p in passages if p.get("id") not in known_ids]
+            state["rag_passages"] = state.get("rag_passages", []) + new_passages
+            _log(state, "rag_retrieved", f"Retrieved {len(new_passages)} new relevant passages from Qdrant knowledge base (top score: {passages[0].get('raw_score', 0):.2f})")
         else:
             msg = rag_res.get("message") or "No passages met minimum relevance threshold"
             _log(state, "rag_empty", f"Qdrant KB: {msg}. Discarded non-relevant candidate vectors.")
@@ -370,9 +477,12 @@ def execute_tools_node(state: ResearchState) -> ResearchState:
     # 2. Live Web Searches: if route in ('web', 'rag_and_web') OR if 'search_web' was selected
     should_search_web = (route in ("web", "rag_and_web")) or ("search_web" in selected_tools)
     if should_search_web:
+        # The first round may collect MAX_UNIQUE_SOURCES pages; each follow-up round may add MAX_FOLLOWUP_SOURCES more
+        round_quota = config.MAX_UNIQUE_SOURCES if state["iteration"] == 1 else config.MAX_FOLLOWUP_SOURCES
+        source_limit = len(state.get("unique_source_urls", [])) + round_quota
         for q in queries:
-            if len(state.get("unique_source_urls", [])) >= config.MAX_UNIQUE_SOURCES:
-                _log(state, "source_cap", f"Reached maximum source quota ({config.MAX_UNIQUE_SOURCES})")
+            if len(state.get("unique_source_urls", [])) >= source_limit:
+                _log(state, "source_cap", f"Reached this round's source quota ({round_quota} new pages)")
                 break
             if state.get("tool_call_count", 0) >= state.get("max_tool_calls", config.MAX_TOOL_CALLS):
                 _log(state, "tool_cap", "Reached maximum tool call quota")
@@ -387,7 +497,7 @@ def execute_tools_node(state: ResearchState) -> ResearchState:
                 if u and u not in state.get("unique_source_urls", []):
                     state.setdefault("search_results", []).append(r)
                     state.setdefault("unique_source_urls", []).append(u)
-                    if len(state["unique_source_urls"]) >= config.MAX_UNIQUE_SOURCES:
+                    if len(state["unique_source_urls"]) >= source_limit:
                         break
 
     # 3. Parallel Webpage Content Fetching
@@ -409,7 +519,8 @@ def execute_tools_node(state: ResearchState) -> ResearchState:
                 url = item.get("url", "")
                 try:
                     fetch_res = future.result()
-                    state["tool_call_count"] = state.get("tool_call_count", 0) + 1
+                    # Page downloads don't use the tool-call budget, so they can't starve follow-up rounds
+                    state["pages_fetched"] = state.get("pages_fetched", 0) + 1
                     if fetch_res.get("success"):
                         cred = tools.check_source_credibility(url)
                         state.setdefault("fetched_sources", []).append({
@@ -427,8 +538,11 @@ def execute_tools_node(state: ResearchState) -> ResearchState:
                     _log(state, "fetch_notice", f"✗ Error on {url[:60]}: {str(ex)[:80]}")
 
     # 4. Background Entity Grounding via Wikipedia (if selected or general encyclopedic inquiry)
+    # The planner's tool list decides; the old default rules apply only when no LLM plan exists
+    planner_decided = state.get("plan_source") == "llm"
     should_search_wiki = "search_wikipedia" in selected_tools or (
-        route in ("web", "rag_and_web") and state.get("iteration", 0) == 1 and not state.get("wiki_facts")
+        not planner_decided
+        and route in ("web", "rag_and_web") and state.get("iteration", 0) == 1 and not state.get("wiki_facts")
     )
     if should_search_wiki and not state.get("wiki_facts"):
         wiki_query = queries[0] if queries else state["question"]
@@ -440,8 +554,9 @@ def execute_tools_node(state: ResearchState) -> ResearchState:
             _log(state, "wiki_retrieved", f"Retrieved {len(wiki_res['results'])} background encyclopedic articles from Wikipedia")
 
     # 5. Scholarly & Academic Paper Search (if AI/scientific/benchmark context or selected)
-    academic_triggers = ("paper", "study", "research", "scientific", "ai", "benchmark", "climate", "medical", "trial", "arxiv", "argon", "claude")
-    is_academic = "search_academic" in selected_tools or any(trig in state["question"].lower() for trig in academic_triggers)
+    is_academic = "search_academic" in selected_tools or (
+        not planner_decided and _has_academic_trigger(state["question"])
+    )
     if is_academic and not state.get("academic_papers") and route in ("web", "rag_and_web"):
         acad_query = queries[0] if queries else state["question"]
         _log(state, "tool_call", f"Invoking tool: `search_academic` on arXiv repository for '{acad_query[:60]}'")
@@ -462,28 +577,29 @@ def extract_claims_node(state: ResearchState) -> ResearchState:
     """Extract independently verifiable claims, dates, and attributions from collected evidence."""
     _log(state, "extracting", "Extracting key factual claims and stakeholder statements")
 
-    source_texts = []
-    for s in state.get("fetched_sources", []):
-        cred_note = f" (Credibility: {s.get('credibility', {}).get('trust_tier', 'Standard')})" if s.get('credibility') else ""
-        source_texts.append(
-            f"Web Source: {s.get('title', 'Unknown')} ({s.get('url', '')}){cred_note}\n"
-            f"Content: {s.get('content', s.get('snippet', ''))[:1800]}\n"
-        )
+    # Numbered source list [S1..Sn]: the LLM cites these IDs when judging each claim
+    evidence_sources: list[dict[str, Any]] = []
+
+    def add_source(kind: str, name: str, url: str, text: str, note: str = "") -> None:
+        evidence_sources.append({"id": f"S{len(evidence_sources) + 1}", "kind": kind, "name": name, "url": url, "text": text, "note": note})
+
     for p in state.get("rag_passages", []):
-        source_texts.append(
-            f"Knowledge Base: {p.get('document_name', 'Doc')} (Page {p.get('page_number', '?')})\n"
-            f"Content: {p.get('text', '')[:1000]}\n"
-        )
+        add_source("Knowledge Base (primary document)", f"{p.get('document_name', 'Doc')} (p.{p.get('page_number', '?')})", p.get("url", ""), p.get("text", "")[:1000])
+    for s in state.get("fetched_sources", []):
+        cred = s.get("credibility") or {}
+        note = f"Credibility: {cred.get('trust_tier', 'Standard')}" if cred else ""
+        add_source("Web Source", s.get("title", "Unknown"), s.get("url", ""), s.get("content", s.get("snippet", ""))[:1800], note)
     for w in state.get("wiki_facts", []):
-        source_texts.append(
-            f"Wikipedia Background: {w.get('title', 'Article')} ({w.get('url', '')})\n"
-            f"Overview: {w.get('extract', w.get('snippet', ''))[:1000]}\n"
-        )
+        add_source("Wikipedia Background", w.get("title", "Article"), w.get("url", ""), w.get("extract", w.get("snippet", ""))[:1000])
     for a in state.get("academic_papers", []):
-        source_texts.append(
-            f"Academic Paper: {a.get('title', 'Paper')} ({a.get('url', '')})\n"
-            f"Abstract: {a.get('abstract', '')[:1000]}\n"
-        )
+        add_source("Academic Paper", a.get("title", "Paper"), a.get("url", ""), a.get("abstract", "")[:1000])
+
+    evidence_sources = evidence_sources[:16]
+    state["evidence_sources"] = evidence_sources
+    source_texts = [
+        f"[{s['id']}] {s['kind']}: {s['name']} ({s['url']}){' — ' + s['note'] if s['note'] else ''}\nContent: {s['text']}\n"
+        for s in evidence_sources
+    ]
 
     if not source_texts and state.get("search_results"):
         for r in state.get("search_results", []):
@@ -501,10 +617,11 @@ def extract_claims_node(state: ResearchState) -> ResearchState:
         return state
 
 
-    combined = "\n---\n".join(source_texts[:10])
+    combined = "\n---\n".join(source_texts)
 
     system_prompt = """You are a forensic research analyst. Extract key verifiable factual claims,
-figures, legal developments, and attributed positions from the provided sources.
+figures, legal developments, and attributed positions from the provided sources, then judge
+each claim against ALL the numbered sources [S1], [S2], ...
 
 Respond strictly with a JSON array:
 [
@@ -514,9 +631,26 @@ Respond strictly with a JSON array:
         "source_url": "URL or Document reference",
         "date": "Date if explicitly stated, else null",
         "type": "fact|allegation|opinion|legal_order|statistic",
-        "attributed_to": "Official body, person, or organization making the assertion"
+        "attributed_to": "Official body, person, or organization making the assertion",
+        "supporting_sources": ["S1"],
+        "contradicting_sources": [],
+        "verdict": "supported|partially_supported|contradicted|insufficient",
+        "verdict_reason": "One sentence explaining the verdict"
     }
 ]
+
+JUDGING RULES:
+- Judge the claim exactly as stated. For an attributed claim ("X alleged Y"), judge whether
+  sources confirm that X said it, not whether Y is true.
+- "contradicting_sources" lists ONLY sources that explicitly state something incompatible with
+  the claim (a different number, date, outcome, or an explicit denial of it). A source that merely
+  mentions protests, criticism, rejected petitions or disagreement on the topic does NOT contradict it.
+- "supported": confirmed by a primary document (Knowledge Base, official order, court judgment)
+  or by two or more independent sources.
+- "partially_supported": confirmed by only one secondary source, or only part of the claim is confirmed.
+- "contradicted": at least one credible source explicitly contradicts it.
+- "insufficient": no source confirms or contradicts it.
+
 Extract 4 to 12 precise claims. Distinguish facts from allegations. Do NOT wrap in markdown code blocks."""
 
     user_prompt = f"Research Question: {state['question']}\n\nEvidence Sources:\n{combined}"
@@ -539,11 +673,78 @@ Extract 4 to 12 precise claims. Distinguish facts from allegations. Do NOT wrap 
 #  NODE 5: EVIDENCE EVALUATION & CONFLICT DETECTION
 # ═══════════════════════════════════════════════════════════════════════════════
 
+_LLM_VERDICTS = {
+    "supported": "Supported",
+    "partially_supported": "Partially Supported",
+    "contradicted": "Contradicted",
+    "insufficient": "Insufficient Evidence",
+}
+
+
+def _comparison_from_llm_judgements(claims: list[dict[str, Any]], sources: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """
+    Build the evidence comparison from the per-claim verdicts the LLM gave during claim extraction.
+    Returns None when any claim lacks a valid verdict, so the caller can fall back to keyword matching.
+    """
+    if not claims or not all(str(c.get("verdict", "")).lower() in _LLM_VERDICTS for c in claims):
+        return None
+
+    by_id = {s["id"]: s for s in sources}
+    analysis = []
+    for c in claims:
+        verdict = _LLM_VERDICTS[str(c["verdict"]).lower()]
+        supporting = [by_id[i] for i in c.get("supporting_sources") or [] if i in by_id]
+        contradicting = [by_id[i] for i in c.get("contradicting_sources") or [] if i in by_id]
+        related = [
+            {
+                "evidence_text": s["text"][:350],
+                "source": f"[{s['id']}] {s['name']}",
+                "url": s["url"],
+                "relevance": None,  # judged by the LLM, not by word overlap
+                "is_contradiction": is_contra,
+            }
+            for group, is_contra in ((contradicting, True), (supporting, False))
+            for s in group
+        ]
+        analysis.append({
+            "claim": c.get("claim", ""),
+            "attributed_to": c.get("attributed_to") or c.get("source_name", "Unknown"),
+            "source_url": c.get("source_url", ""),
+            "status": "contradicted" if verdict == "Contradicted" else "unsupported" if verdict == "Insufficient Evidence" else "has_related_evidence",
+            "verdict": verdict,
+            "verdict_reason": c.get("verdict_reason", ""),
+            "supporting_count": len(supporting),
+            "contradicting_count": len(contradicting),
+            "related_evidence_count": len(related),
+            "related_evidence": related[:4],
+        })
+
+    comparison = tools.summarize_claim_verdicts(analysis)
+    comparison["method"] = "llm_judgement"
+    return comparison
+
 def evaluate_evidence_node(state: ResearchState) -> ResearchState:
     """Triangulate evidence across sources and detect contradictions or gaps."""
     _log(state, "evaluating", "Evaluating evidence corroboration and checking for source contradictions")
 
     claims = state.get("extracted_claims", [])
+
+    llm_comparison = _comparison_from_llm_judgements(claims, state.get("evidence_sources", []))
+    if llm_comparison is not None:
+        comparison = llm_comparison
+        state["evidence_comparison"] = comparison
+        state["conflict_detected"] = comparison["conflict_detected"]
+        state["fact_check_verdict"] = comparison["overall_verdict"]
+        _log(
+            state,
+            "conflict_detected" if comparison["conflict_detected"] else "evaluation_complete",
+            f"Claims judged against sources: {comparison['supported_claims']} supported, "
+            f"{comparison['partially_supported_claims']} partially supported, "
+            f"{comparison['contradicted_claims']} contradicted, {comparison['unsupported_claims']} without evidence",
+        )
+        return state
+
+    _log(state, "evaluation_fallback", "Claim judgements unavailable; using keyword-overlap evidence matching")
     evidence_items = []
 
     for s in state.get("fetched_sources", []):
@@ -730,6 +931,7 @@ Provide clear justification.
 
 CITATION RULES:
 - Use inline citation tags such as [KB-1], [WEB-1] directly after factual statements.
+- Write citations ONLY in that plain square-bracket form. Never use 【】 brackets, "†" markers or line ranges like L1-L4.
 - Every factual assertion MUST cite a retrieved source tag from the provided pool.
 - NEVER invent URLs, documents, dates, or quotations.
 - Acknowledge contradictory evidence and unverified claims explicitly.
@@ -768,7 +970,7 @@ Total Sources: {len(state.get('unique_source_urls', []))} web, {len(state.get('r
 
 Generate the complete, verified research report now."""
 
-    report = _call_llm(system_prompt, user_prompt)
+    report = _normalize_citations(_call_llm(system_prompt, user_prompt))
 
     # Append provenance footer
     footer = (
@@ -901,16 +1103,27 @@ def run_research(
     conversation_id: str | None = None,
     callback=None,
     log_callback=None,
+    route_override: str | None = None,
+    max_iterations: int | None = None,
+    rag_top_k: int | None = None,
 ) -> ResearchState:
     """
     Execute the agentic research workflow.
     `callback(state, node_name)`: Called after each graph node executes.
     `log_callback(entry)`: Called immediately whenever an action or tool is invoked.
+    `route_override`: Force 'direct', 'rag', 'web' or 'rag_and_web' instead of auto-routing.
+    `max_iterations`: Maximum evidence-gathering rounds; `rag_top_k`: passages pulled from Qdrant.
     """
     global _current_log_callback
     _current_log_callback = log_callback
     graph = build_research_graph()
     state = _initial_state(question, conversation_id=conversation_id)
+    if route_override in VALID_ROUTES:
+        state["route_override"] = route_override
+    if max_iterations:
+        state["max_iterations"] = max_iterations
+    if rag_top_k:
+        state["rag_top_k"] = rag_top_k
 
     try:
         for event in graph.stream(state, stream_mode="updates"):

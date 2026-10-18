@@ -134,10 +134,11 @@ class TestRAGIngestionAndRetrieval:
             assert result["total_chunks"] > 0
             assert result["documents_indexed"] == 1
 
-            # Retrieve
-            rag_result = knowledge_base.search_knowledge_base("Election Commission SIR", filters={"document_name": "Test ECI Document"})
+            # Retrieve (a full question; very short queries fall below the relevance threshold)
+            query = "Special Intensive Revision of electoral rolls by the Election Commission"
+            rag_result = knowledge_base.search_knowledge_base(query, filters={"document_name": "Test ECI Document"})
             if not rag_result.get("results"):
-                rag_result = knowledge_base.retrieve_evidence("Election Commission SIR")
+                rag_result = knowledge_base.retrieve_evidence(query)
 
             assert len(rag_result["results"]) > 0
             matching = [r for r in rag_result["results"] if r.get("document_name") == "Test ECI Document"]

@@ -1,26 +1,6 @@
 {
   "documents": [
     {
-      "name": "Climate Accord 2025",
-      "path": "C:\\Users\\Ketan Agrawal\\AppData\\Local\\Temp\\pytest-of-Ketan Agrawal\\pytest-16\\test_document_research_retriev0\\climate_accord.txt",
-      "url": "",
-      "date": "Unknown",
-      "hash": "2b376b7db5e422c34de698323a345684a7a962171cba004a1c84e3545ee1d701",
-      "chunks_count": 1,
-      "ingested_at": "2026-10-13T20:12:14.234356+00:00",
-      "content_type": ".txt"
-    },
-    {
-      "name": "Statute 1950",
-      "path": "C:\\Users\\Ketan Agrawal\\AppData\\Local\\Temp\\pytest-of-Ketan Agrawal\\pytest-16\\test_persistence_of_ingested_m0\\statute_1950.txt",
-      "url": "",
-      "date": "1950",
-      "hash": "d93453e9aec04eeafe62f8d0a05e1e89a5e124523fb879c1e4005b2b84776e09",
-      "chunks_count": 1,
-      "ingested_at": "2026-10-13T20:13:03.338363+00:00",
-      "content_type": ".txt"
-    },
-    {
       "name": "Bihar SIR Press Notes 2025",
       "path": "C:\\Users\\Ketan Agrawal\\Desktop\\Agentic AI project\\data\\documents\\Bihar SIR Press Notes 2025.pdf",
       "url": "",
@@ -38,16 +18,6 @@
       "hash": "c13fc08f1becb0f5f4b1ce0f8ee3a7867fe6560f1ac078a1b5a8fff03aaac316",
       "chunks_count": 147,
       "ingested_at": "2026-10-14T17:30:44.683039+00:00",
-      "content_type": ".pdf"
-    },
-    {
-      "name": "Source 1",
-      "path": "C:\\Users\\Ketan Agrawal\\Desktop\\Agentic AI project\\data\\documents\\Source 1.pdf",
-      "url": "",
-      "date": "2026-10-14",
-      "hash": "c13fc08f1becb0f5f4b1ce0f8ee3a7867fe6560f1ac078a1b5a8fff03aaac316",
-      "chunks_count": 147,
-      "ingested_at": "2026-10-14T17:30:49.615662+00:00",
       "content_type": ".pdf"
     },
     {

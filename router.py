@@ -22,6 +22,7 @@ def route_query(
     question: str,
     has_indexed_documents: bool = False,
     llm_callable=None,
+    kb_top_score: float | None = None,
 ) -> dict[str, Any]:
     """
     Classify the query into one of: 'direct', 'rag', 'web', 'rag_and_web'.
@@ -96,6 +97,15 @@ def route_query(
         return {
             "route": "web",
             "reason": "No uploaded documents indexed; routing to live external web research.",
+            "confidence": 0.90,
+            "bypass_planning": False,
+        }
+
+    # 4b. Indexed documents semantically match the query: use them, cross-checked against the web
+    if kb_top_score is not None and kb_top_score >= config.MIN_RAG_RELEVANCE_SCORE:
+        return {
+            "route": "rag_and_web",
+            "reason": f"Indexed documents are relevant to this query (top match {kb_top_score:.2f}); combining knowledge base evidence with live web verification.",
             "confidence": 0.90,
             "bypass_planning": False,
         }

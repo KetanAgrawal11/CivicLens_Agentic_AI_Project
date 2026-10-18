@@ -18,6 +18,9 @@ data/qdrant_storage/
 # Cached search results
 data/cache/
 
+# Saved research sessions (local history)
+data/sessions/
+
 # Logs
 logs/
 *.log

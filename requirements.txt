@@ -25,6 +25,10 @@ sentence-transformers>=3.0.0
 qdrant-client>=1.13.0
 faiss-cpu>=1.10.0
 
+# PDF export (report, claims matrix and sources)
+reportlab>=4.0
+markdown>=3.5
+
 # Environment & utilities
 python-dotenv>=1.0.0
 

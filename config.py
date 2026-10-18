@@ -30,6 +30,7 @@ QDRANT_COLLECTION_NAME: str = os.getenv("QDRANT_COLLECTION_NAME", "agentic_resea
 # ── Agent limits & execution bounds ──────────────────────────────────────────
 MAX_AGENT_ITERATIONS: int = int(os.getenv("MAX_AGENT_ITERATIONS", "5"))
 MAX_UNIQUE_SOURCES: int = int(os.getenv("MAX_UNIQUE_SOURCES", "8"))
+MAX_FOLLOWUP_SOURCES: int = int(os.getenv("MAX_FOLLOWUP_SOURCES", "4"))  # new web pages per follow-up round
 MAX_RAG_PASSAGES: int = int(os.getenv("MAX_RAG_PASSAGES", "6"))
 MIN_RAG_RELEVANCE_SCORE: float = float(os.getenv("MIN_RAG_RELEVANCE_SCORE", "0.40"))
 MAX_TOOL_CALLS: int = int(os.getenv("MAX_TOOL_CALLS", "12"))
@@ -63,9 +64,10 @@ INDEX_DIR: Path = DATA_DIR / "index"
 CACHE_DIR: Path = DATA_DIR / "cache"
 QDRANT_LOCAL_DIR: Path = DATA_DIR / "qdrant_storage"
 METADATA_DB: Path = DATA_DIR / "metadata.json"
+SESSIONS_DIR: Path = DATA_DIR / "sessions"  # saved research sessions shown in the sidebar
 
 # Create directories on import
-for _d in (DOCUMENTS_DIR, INDEX_DIR, CACHE_DIR, QDRANT_LOCAL_DIR):
+for _d in (DOCUMENTS_DIR, INDEX_DIR, CACHE_DIR, QDRANT_LOCAL_DIR, SESSIONS_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
 # ── Embeddings & Document Ingestion ──────────────────────────────────────────

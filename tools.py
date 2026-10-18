@@ -309,13 +309,14 @@ def search_knowledge_base(
     query: str,
     filters: dict[str, Any] | None = None,
     top_k: int = config.MAX_RAG_PASSAGES,
+    min_score: float = config.MIN_RAG_RELEVANCE_SCORE,
 ) -> dict[str, Any]:
     """
     Search the persistent Qdrant knowledge base for relevant chunks.
     Filters allow scoping by document_name or other metadata attributes.
     """
     import knowledge_base
-    return knowledge_base.search_knowledge_base(query=query, filters=filters, top_k=top_k)
+    return knowledge_base.search_knowledge_base(query=query, filters=filters, top_k=top_k, min_score=min_score)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -417,13 +418,18 @@ def compare_evidence(claims: list[dict], sources: list[dict]) -> dict[str, Any]:
             overlap = max(exact_overlap, stem_overlap)
 
             if overlap >= 0.25:
-                # Check for contradiction indicators
+                # Look for contradiction words only in sentences that are about this claim;
+                # a long page mentioning "rejected" somewhere else does not contradict it
                 negation_words = {
                     "denies", "denied", "rejects", "rejected", "false", "disputed",
                     "incorrect", "no evidence", "unfounded", "refutes", "refuted",
                     "violated", "violation", "breached", "failed"
                 }
-                has_negation = any(neg in src_text for neg in negation_words)
+                relevant_sentences = [
+                    sent for sent in re.split(r"(?<=[.!?])\s+", src_text)
+                    if len(claim_stems & {w[:4] for w in re.findall(r'\b[a-zA-Z0-9_-]{3,}\b', sent)}) >= 2
+                ]
+                has_negation = any(neg in sent for sent in relevant_sentences for neg in negation_words)
 
                 ev_entry = {
                     "evidence_text": (src.get("text") or src.get("content") or src.get("snippet") or "")[:350],
@@ -471,33 +477,50 @@ def compare_evidence(claims: list[dict], sources: list[dict]) -> dict[str, Any]:
             "related_evidence": related[:3],
         })
 
+    summary = summarize_claim_verdicts(analysis)
+    summary["conflict_detected"] = conflict_detected
+    summary["conflicting_claims"] = conflicting_claims
+    summary["method"] = "keyword_overlap"
+    return summary
+
+
+CONTRADICTED_VERDICTS = ("Contradicted", "Contradicted / Disputed")
+
+
+def summarize_claim_verdicts(analysis: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate per-claim verdicts into counts, evidence coverage and an overall verdict."""
     total = len(analysis)
-    supported_cnt = sum(1 for a in analysis if a["verdict"] == "Supported")
-    partial_cnt = sum(1 for a in analysis if a["verdict"] == "Partially Supported")
-    contradicted_cnt = sum(1 for a in analysis if a["verdict"] in ("Contradicted", "Contradicted / Disputed"))
-    unsupported_cnt = sum(1 for a in analysis if a["verdict"] == "Insufficient Evidence")
+    supported_cnt = sum(1 for a in analysis if a.get("verdict") == "Supported")
+    partial_cnt = sum(1 for a in analysis if a.get("verdict") == "Partially Supported")
+    contradicted_cnt = sum(1 for a in analysis if a.get("verdict") in CONTRADICTED_VERDICTS)
+    unsupported_cnt = total - supported_cnt - partial_cnt - contradicted_cnt
 
-    # Overall verdict
-    if total == 0:
+    # A single disputed detail should not outweigh many corroborated claims:
+    # "Contradicted" only when contradictions are at least as common as supported claims
+    if total == 0 or unsupported_cnt == total:
         overall_verdict = "Insufficient Evidence"
-    elif contradicted_cnt > 0:
+    elif contradicted_cnt > 0 and contradicted_cnt >= supported_cnt:
         overall_verdict = "Contradicted"
-    elif unsupported_cnt == total:
-        overall_verdict = "Insufficient Evidence"
-    elif supported_cnt > 0 and unsupported_cnt == 0 and partial_cnt == 0:
+    elif supported_cnt == total:
         overall_verdict = "Supported"
-    elif supported_cnt > 0 or partial_cnt > 0:
-        overall_verdict = "Partially Supported"
     else:
-        overall_verdict = "Insufficient Evidence"
+        overall_verdict = "Partially Supported"
 
+    # Share of claims for which matching evidence (supporting or contradicting) was found
+    grounded_cnt = supported_cnt + partial_cnt + contradicted_cnt
+    evidence_coverage = round(100 * grounded_cnt / total) if total else None
 
     return {
         "total_claims": total,
+        "supported_claims": supported_cnt,
+        "partially_supported_claims": partial_cnt,
+        "contradicted_claims": contradicted_cnt,
+        "grounded_claims": grounded_cnt,
+        "evidence_coverage": evidence_coverage,
         "claims_with_evidence": supported_cnt + partial_cnt,
         "unsupported_claims": unsupported_cnt,
-        "conflict_detected": conflict_detected,
-        "conflicting_claims": conflicting_claims,
+        "conflict_detected": contradicted_cnt > 0,
+        "conflicting_claims": [a.get("claim", "")[:80] for a in analysis if a.get("verdict") in CONTRADICTED_VERDICTS],
         "overall_verdict": overall_verdict,
         "analysis": analysis,
     }

@@ -613,6 +613,24 @@ def ingest_document(
             "chunks": identical_entry.get("chunks_count", 0),
         }
 
+    # Same content already indexed under another name: point IDs derive from the hash,
+    # so re-ingesting would silently overwrite the other document's vectors
+    same_content_entry = next(
+        (d for d in existing_docs if d.get("hash") == doc_hash and d.get("name") != doc_name),
+        None,
+    )
+    if same_content_entry:
+        return {
+            "success": False,
+            "error": "Duplicate content",
+            "document": doc_name,
+            "document_name": doc_name,
+            "skipped": True,
+            "message": f"'{doc_name}' has identical content to already indexed document '{same_content_entry.get('name')}'.",
+            "hash": doc_hash,
+            "chunks": same_content_entry.get("chunks_count", 0),
+        }
+
     # If document exists by name/path with DIFFERENT hash, delete old points before re-indexing
     modified_entry = next(
         (d for d in existing_docs if d.get("name") == doc_name or d.get("path") == str(source)),
